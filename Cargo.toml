@@ -1,0 +1,18 @@
+[package]
+name = "audio-capture"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "record-wav"
+
+[[bin]]
+name = "record-wav-2"
+
+[dependencies]
+anyhow = "1.0"
+hound = "3.5"
+clap = { version = ">=4.6, <5", features = ["derive"] }
+cpal = { version = "0.18.1" }
+rodio = { version = "0.22.2", features = ["wav_output"] }
+inquire = "0.9.3"
