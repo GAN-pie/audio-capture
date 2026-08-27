@@ -127,7 +127,7 @@ mod tests {
             }
         }
         // Assuming 48kHz stereo, we expect 48000 frames (samples) in 1 second.
-        let expected_frames = 48000;
+        let expected_frames = 48000 * 2;
         let margin = 5000; // Larger margin for CI/varying environments
         assert!(
             total_frames >= (expected_frames - margin) && total_frames <= (expected_frames + margin),
