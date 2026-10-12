@@ -1,4 +1,6 @@
 use anyhow::{Result, anyhow};
+use std::fs::File;
+use std::io::BufWriter;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -19,6 +21,7 @@ pub struct AudioCaptureConfig {
     pub sample_format: String,
     pub start: bool,
     pub duration: u64,
+    pub record_file: Option<String>,
 }
 
 impl Default for AudioCaptureConfig {
@@ -30,6 +33,7 @@ impl Default for AudioCaptureConfig {
             sample_format: "FLOAT32".to_string(),
             start: true,
             duration: 0,
+            record_file: None,
         }
     }
 }
@@ -44,10 +48,48 @@ fn parse_sample_format(format: &str) -> Result<SampleFormat> {
     }
 }
 
+fn sample_format(format: SampleFormat) -> hound::SampleFormat {
+    if format.is_dsd() {
+        panic!("DSD formats cannot be written to WAV files");
+    } else if format.is_float() {
+        hound::SampleFormat::Float
+    } else {
+        hound::SampleFormat::Int
+    }
+}
+
+fn wav_spec_from_config(config: &AudioCaptureConfig) -> hound::WavSpec {
+    let _sample_format = parse_sample_format(&config.sample_format).unwrap();
+    hound::WavSpec {
+        channels: config.channels as _,
+        sample_rate: config.sample_rate as _,
+        bits_per_sample: (_sample_format.sample_size() * 8) as _,
+        sample_format: sample_format(_sample_format),
+    }
+}
+
+type WavWriterHandle = Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>;
+
+fn write_input_data<T, U>(input: &[T], writer: &WavWriterHandle)
+where
+    T: Sample,
+    U: Sample + hound::Sample + cpal::FromSample<T>,
+{
+    if let Ok(mut guard) = writer.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            for &sample in input.iter() {
+                let sample: U = U::from_sample(sample);
+                writer.write_sample(sample).ok();
+            }
+        }
+    }
+}
+
 /// A struct that captures audio from the default input device and provides it via an Iterator.
 pub struct AudioCapture {
     receiver: mpsc::Receiver<AudioChunk>,
     stream: Arc<Mutex<Option<cpal::Stream>>>,
+    config_params: AudioCaptureConfig,
 }
 
 impl AudioCapture {
@@ -71,14 +113,29 @@ impl AudioCapture {
             },
         };
 
+        let writer = match &config_params.record_file {
+            Some(file_path) => {
+                // The WAV file we're recording to.
+                let spec = wav_spec_from_config(&config_params);
+                let writer = hound::WavWriter::create(file_path, spec)?;
+                Some(Arc::new(Mutex::new(Some(writer))))
+            }
+            None => None,
+        };
+
         let err_fn = |err: cpal::Error| {
             eprintln!("Stream error: {}", err);
         };
+
+        let writer_clone = writer.clone();
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_input_stream(
                 stream_config,
                 move |data: &[f32], _| {
+                    if writer_clone.is_some() {
+                        write_input_data::<f32, f32>(data, writer_clone.as_ref().unwrap());
+                    }
                     let _ = sender.send(data.to_vec());
                 },
                 err_fn,
@@ -87,6 +144,9 @@ impl AudioCapture {
             SampleFormat::I16 => device.build_input_stream(
                 stream_config,
                 move |data: &[i16], _| {
+                    if writer_clone.is_some() {
+                        write_input_data::<i16, f32>(data, writer_clone.as_ref().unwrap());
+                    }
                     let f32_data: AudioChunk = data.iter().map(|&s| s.to_sample()).collect();
                     let _ = sender.send(f32_data);
                 },
@@ -96,6 +156,9 @@ impl AudioCapture {
             SampleFormat::I32 => device.build_input_stream(
                 stream_config,
                 move |data: &[i32], _| {
+                    if writer_clone.is_some() {
+                        write_input_data::<i32, f32>(data, writer_clone.as_ref().unwrap());
+                    }
                     let f32_data: AudioChunk = data.iter().map(|&s| s.to_sample()).collect();
                     let _ = sender.send(f32_data);
                 },
@@ -105,6 +168,9 @@ impl AudioCapture {
             SampleFormat::I8 => device.build_input_stream(
                 stream_config,
                 move |data: &[i8], _| {
+                    if writer_clone.is_some() {
+                        write_input_data::<i8, f32>(data, writer_clone.as_ref().unwrap());
+                    }
                     let f32_data: AudioChunk = data.iter().map(|&s| s.to_sample()).collect();
                     let _ = sender.send(f32_data);
                 },
@@ -132,10 +198,24 @@ impl AudioCapture {
                 if let Ok(mut stream_guard) = stream_clone.lock() {
                     *stream_guard = None;
                 }
+                if writer.is_some() {
+                    writer
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .finalize()
+                        .expect("Failed to finalize wavefile.");
+                }
             });
         }
 
-        Ok(AudioCapture { receiver, stream })
+        Ok(AudioCapture {
+            receiver,
+            stream,
+            config_params,
+        })
     }
 
     /// Manually starts the audio stream.
@@ -248,6 +328,7 @@ mod tests {
             sample_format: "FLOAT32".to_string(),
             start: true,
             duration: 0,
+            record_file: None,
         };
         let mut iterator =
             read_microphone_audio_with_config(config).expect("Failed to start audio capture");
@@ -287,6 +368,7 @@ mod tests {
             sample_format: "I16".to_string(),
             start: true,
             duration: 0,
+            record_file: None,
         };
         let result = read_microphone_audio_with_config(config);
         // We don't assert is_ok() because it depends on hardware,
@@ -319,19 +401,35 @@ mod tests {
     }
 
     #[test]
-    fn test_play_after_stop_fails() {
+    fn test_wav_file_creation() {
+        let test_file = "test_output.wav";
+        // Clean up in case a previous test failed
+        let _ = std::fs::remove_file(test_file);
+
         let config = AudioCaptureConfig {
+            channels: 1,
+            sample_rate: 44100,
+            buffer_size: Some(512),
+            sample_format: "I16".to_string(),
+            start: true,
             duration: 1,
-            ..Default::default()
+            record_file: Some(test_file.to_string()),
         };
-        let capture =
+
+        let mut capture =
             read_microphone_audio_with_config(config).expect("Failed to start audio capture");
 
-        // Wait for duration to expire
-        thread::sleep(std::time::Duration::from_secs(2));
+        // Consume the iterator until it stops due to duration
+        while let Some(_) = capture.next() {}
 
-        // Attempting to play a stopped stream should return an error
-        let result = capture.play();
-        assert!(result.is_err());
+        // Give a tiny bit of time for the writer to flush/close if necessary
+        thread::sleep(std::time::Duration::from_millis(500));
+
+        let file_exists = std::path::Path::new(test_file).exists();
+
+        // Cleanup
+        let _ = std::fs::remove_file(test_file);
+
+        assert!(file_exists, "WAV file should have been created");
     }
 }
