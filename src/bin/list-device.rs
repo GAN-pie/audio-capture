@@ -21,7 +21,7 @@ enum Commands {
     /// Dump the configuration of a given device
     Dump {
         /// The ID of the device to dump
-        device_id: String,
+        device_id: Option<String>,
     },
 }
 
@@ -43,14 +43,21 @@ fn main() -> Result<()> {
             }
         }
         Commands::Dump { device_id } => {
-            let mut devices = host.input_devices()?;
-            let device = devices
-                .find(|d| {
-                    d.id()
-                        .map(|id| id.to_string() == device_id)
-                        .unwrap_or(false)
-                })
-                .ok_or_else(|| anyhow!("Device with ID '{}' not found", device_id))?;
+            let device = match device_id {
+                Some(device_id) => {
+                    let mut devices = host.input_devices()?;
+                    devices
+                        .find(|d| {
+                            d.id()
+                                .map(|id| id.to_string() == device_id)
+                                .unwrap_or(false)
+                        })
+                        .ok_or_else(|| anyhow!("Device with ID '{}' not found", device_id))?
+                }
+                None => host
+                    .default_input_device()
+                    .ok_or_else(|| anyhow!("Cannot found default input device"))?,
+            };
 
             let config = device.default_input_config()?;
             println!("--- Device Information ---");
