@@ -7,7 +7,8 @@ edition = "2024"
 name = "record-wav"
 
 [[bin]]
-name = "record-wav-2"
+name = "list-device"
+path = "src/bin/list-device.rs"
 
 [dependencies]
 anyhow = "1.0"
