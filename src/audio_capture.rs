@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use cpal::StreamConfig;
 use std::fs::File;
 use std::io::BufWriter;
 use std::sync::{Arc, Mutex, mpsc};
@@ -30,10 +31,23 @@ impl Default for AudioCaptureConfig {
             channels: 1,
             sample_rate: 48000,
             buffer_size: Some(256),
-            sample_format: "FLOAT32".to_string(),
+            sample_format: "F32".to_string(),
             start: true,
             duration: 0,
             record_file: None,
+        }
+    }
+}
+
+impl Into<cpal::StreamConfig> for AudioCaptureConfig {
+    fn into(self) -> cpal::StreamConfig {
+        cpal::StreamConfig {
+            channels: self.channels,
+            sample_rate: self.sample_rate,
+            buffer_size: match self.buffer_size {
+                Some(size) => cpal::BufferSize::Fixed(size),
+                None => cpal::BufferSize::Fixed(256),
+            },
         }
     }
 }
@@ -89,7 +103,6 @@ where
 pub struct AudioCapture {
     receiver: mpsc::Receiver<AudioChunk>,
     stream: Arc<Mutex<Option<cpal::Stream>>>,
-    config_params: AudioCaptureConfig,
 }
 
 impl AudioCapture {
@@ -104,14 +117,7 @@ impl AudioCapture {
 
         let sample_format = parse_sample_format(&config_params.sample_format)?;
 
-        let stream_config = cpal::StreamConfig {
-            channels: config_params.channels,
-            sample_rate: config_params.sample_rate,
-            buffer_size: match config_params.buffer_size {
-                Some(size) => cpal::BufferSize::Fixed(size),
-                None => cpal::BufferSize::Fixed(256),
-            },
-        };
+        let stream_config: StreamConfig = config_params.clone().into();
 
         let writer = match &config_params.record_file {
             Some(file_path) => {
@@ -211,11 +217,7 @@ impl AudioCapture {
             });
         }
 
-        Ok(AudioCapture {
-            receiver,
-            stream,
-            config_params,
-        })
+        Ok(AudioCapture { receiver, stream })
     }
 
     /// Manually starts the audio stream.
