@@ -16,6 +16,7 @@ pub type AudioChunk = Vec<f32>;
 /// Configuration for audio capture.
 #[derive(Debug, Clone)]
 pub struct AudioCaptureConfig {
+    pub device_id: Option<String>,
     pub channels: u16,
     pub sample_rate: u32,
     pub buffer_size: Option<u32>,
@@ -28,6 +29,7 @@ pub struct AudioCaptureConfig {
 impl Default for AudioCaptureConfig {
     fn default() -> Self {
         Self {
+            device_id: Some("alsa:default".to_string()),
             channels: 1,
             sample_rate: 48000,
             buffer_size: Some(256),
@@ -62,7 +64,7 @@ fn parse_sample_format(format: &str) -> Result<SampleFormat> {
     }
 }
 
-fn sample_format(format: SampleFormat) -> hound::SampleFormat {
+fn to_hound_sample_format(format: SampleFormat) -> hound::SampleFormat {
     if format.is_dsd() {
         panic!("DSD formats cannot be written to WAV files");
     } else if format.is_float() {
@@ -78,31 +80,40 @@ fn wav_spec_from_config(config: &AudioCaptureConfig) -> hound::WavSpec {
         channels: config.channels as _,
         sample_rate: config.sample_rate as _,
         bits_per_sample: (_sample_format.sample_size() * 8) as _,
-        sample_format: sample_format(_sample_format),
+        sample_format: to_hound_sample_format(_sample_format),
     }
 }
 
 type WavWriterHandle = Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>;
 
-fn write_input_data<T, U>(input: &[T], writer: &WavWriterHandle)
+fn write_input_data<T, U>(input: &[T], writer: &WavWriterHandle) -> Result<()>
 where
     T: Sample,
     U: Sample + hound::Sample + cpal::FromSample<T>,
 {
-    if let Ok(mut guard) = writer.try_lock() {
-        if let Some(writer) = guard.as_mut() {
+    if let Ok(mut guard) = writer.lock() {
+        if let Some(ref mut w) = *guard {
             for &sample in input.iter() {
                 let sample: U = U::from_sample(sample);
-                writer.write_sample(sample).ok();
+                match w.write_sample(sample) {
+                    Err(error) => panic!("Error: {:?}, cannot write sample", error),
+                    _ => {}
+                }
             }
+        } else {
+            return Err(anyhow!("Cannot write data"));
         }
+    } else {
+        return Err(anyhow!("Cannot acquire data writer"));
     }
+    Ok(())
 }
 
 /// A struct that captures audio from the default input device and provides it via an Iterator.
 pub struct AudioCapture {
     receiver: mpsc::Receiver<AudioChunk>,
     stream: Arc<Mutex<Option<cpal::Stream>>>,
+    config_params: AudioCaptureConfig,
 }
 
 impl AudioCapture {
@@ -111,9 +122,14 @@ impl AudioCapture {
         let (sender, receiver) = mpsc::channel::<AudioChunk>();
 
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("No default input device found"))?;
+        let device = match config_params.device_id {
+            Some(ref device_id) => host
+                .device_by_id(&cpal::DeviceId::new(host.id(), device_id))
+                .ok_or_else(|| anyhow!("Cannot found device {:?}", device_id))?,
+            None => host
+                .default_input_device()
+                .ok_or_else(|| anyhow!("No default input device found"))?,
+        };
 
         let sample_format = parse_sample_format(&config_params.sample_format)?;
 
@@ -201,23 +217,27 @@ impl AudioCapture {
             let stream_clone = Arc::clone(&stream);
             thread::spawn(move || {
                 thread::sleep(std::time::Duration::from_secs(config_params.duration));
+
                 if let Ok(mut stream_guard) = stream_clone.lock() {
                     *stream_guard = None;
                 }
-                if writer.is_some() {
-                    writer
-                        .unwrap()
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .unwrap()
-                        .finalize()
-                        .expect("Failed to finalize wavefile.");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+
+                if let Some(w) = writer {
+                    if let Ok(mut guard) = w.lock() {
+                        if let Some(writer) = guard.take() {
+                            writer.finalize().expect("Failed to finalize wavefile.");
+                        }
+                    }
                 }
             });
         }
 
-        Ok(AudioCapture { receiver, stream })
+        Ok(AudioCapture {
+            receiver,
+            stream,
+            config_params,
+        })
     }
 
     /// Manually starts the audio stream.
@@ -324,6 +344,7 @@ mod tests {
     fn test_audiocapture_chunk_flow() {
         // Use a specific config to match the test expectation (stereo, 48kHz)
         let config = AudioCaptureConfig {
+            device_id: Some("alsa:default".to_string()),
             channels: 2,
             sample_rate: 48000,
             buffer_size: Some(256),
@@ -364,6 +385,7 @@ mod tests {
     #[test]
     fn test_read_microphone_audio_with_config() {
         let config = AudioCaptureConfig {
+            device_id: Some("alsa:default".to_string()),
             channels: 1,
             sample_rate: 44100,
             buffer_size: Some(512),
@@ -409,6 +431,7 @@ mod tests {
         let _ = std::fs::remove_file(test_file);
 
         let config = AudioCaptureConfig {
+            device_id: Some("alsa:default".to_string()),
             channels: 1,
             sample_rate: 44100,
             buffer_size: Some(512),

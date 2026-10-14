@@ -9,8 +9,12 @@ use clap::Parser;
 #[command(version, about = "AudioCapture CLI tool", long_about = None)]
 struct Opt {
     /// How long to record, in seconds
-    #[arg(long, default_value_t = 3)]
+    #[arg(short('d'), long, default_value_t = 3)]
     duration: u64,
+
+    /// Device ID to use
+    #[arg(short('D'), long)]
+    device_id: Option<String>,
 
     /// Number of channels
     #[arg(short, long, default_value_t = 1)]
@@ -37,6 +41,7 @@ fn main() -> Result<(), anyhow::Error> {
     let opt = Opt::parse();
 
     let config = AudioCaptureConfig {
+        device_id: opt.device_id,
         channels: opt.channels,
         sample_rate: opt.sample_rate,
         buffer_size: opt.buffer_size,
