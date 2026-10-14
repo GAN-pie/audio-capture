@@ -86,7 +86,7 @@ fn wav_spec_from_config(config: &AudioCaptureConfig) -> hound::WavSpec {
 
 type WavWriterHandle = Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>;
 
-fn write_input_data<T, U>(input: &[T], writer: &WavWriterHandle) -> Result<()>
+fn write_input_data<T, U>(input: &[T], writer: &WavWriterHandle)
 where
     T: Sample,
     U: Sample + hound::Sample + cpal::FromSample<T>,
@@ -100,13 +100,8 @@ where
                     _ => {}
                 }
             }
-        } else {
-            return Err(anyhow!("Cannot write data"));
         }
-    } else {
-        return Err(anyhow!("Cannot acquire data writer"));
     }
-    Ok(())
 }
 
 /// A struct that captures audio from the default input device and provides it via an Iterator.
