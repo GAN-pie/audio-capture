@@ -3,6 +3,7 @@
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use cpal::traits::{DeviceTrait, HostTrait};
+use std::collections::BTreeSet;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -59,13 +60,56 @@ fn main() -> Result<()> {
                     .ok_or_else(|| anyhow!("Cannot found default input device"))?,
             };
 
-            let config = device.default_input_config()?;
+            let configs = device.supported_input_configs()?;
+            let mut channels = BTreeSet::new();
+            let mut formats = BTreeSet::new();
+            let mut min_sr = u32::MAX;
+            let mut max_sr = 0;
+            let mut min_bs = None;
+            let mut max_bs = None;
+            let mut found_any = false;
+
+            for config in configs {
+                found_any = true;
+                channels.insert(config.channels());
+                formats.insert(config.sample_format());
+
+                let sr_min = config.min_sample_rate();
+                let sr_max = config.max_sample_rate();
+                min_sr = min_sr.min(sr_min);
+                max_sr = max_sr.max(sr_max);
+
+                match config.buffer_size() {
+                    cpal::SupportedBufferSize::Range { min, max } => {
+                        let min_val = *min;
+                        let max_val = *max;
+                        if min_bs.map_or(true, |m| min_val < m) {
+                            min_bs = Some(min_val);
+                        }
+                        if max_bs.map_or(true, |m| max_val > m) {
+                            max_bs = Some(max_val);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             println!("--- Device Information ---");
             println!("ID:             {:?}", device.id()?);
             println!("Description:    {}", device.description()?);
-            println!("Sample Format:  {:?}", config.sample_format());
-            println!("Channels:       {}", config.channels());
-            println!("Sample Rate:    {:?}", config.sample_rate());
+
+            if !found_any {
+                println!("No supported configurations found.");
+            } else {
+                println!("Channels:       {:?}", channels);
+                println!("Sample Formats: {:?}", formats);
+                println!("Sample Rate:    [{:?}, {:?}]", min_sr, max_sr);
+                if let (Some(min), Some(max)) = (min_bs, max_bs) {
+                    println!("Buffer Size:    [{}, {}]", min, max);
+                } else {
+                    println!("Buffer Size:    Not supported or variable");
+                }
+            }
         }
     }
 
