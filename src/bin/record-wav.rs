@@ -28,8 +28,8 @@ struct Opt {
     #[arg(long)]
     buffer_size: Option<u32>,
 
-    /// Sample format (e.g., FLOAT32, I16, I32, I8)
-    #[arg(short('f'), long, default_value = "FLOAT32")]
+    /// Sample format (e.g., F32, I16, I32, I8)
+    #[arg(short('f'), long, default_value = "F32")]
     sample_format: String,
 
     /// Path to the output WAV file
