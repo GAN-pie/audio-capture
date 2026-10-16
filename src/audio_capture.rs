@@ -32,7 +32,7 @@ impl Default for AudioCaptureConfig {
             device_id: Some("alsa:default".to_string()),
             channels: 1,
             sample_rate: 48000,
-            buffer_size: None,
+            buffer_size: Some(256),
             sample_format: "F32".to_string(),
             start: true,
             duration: 0,
@@ -48,7 +48,7 @@ impl Into<cpal::StreamConfig> for AudioCaptureConfig {
             sample_rate: self.sample_rate,
             buffer_size: match self.buffer_size {
                 Some(size) => cpal::BufferSize::Fixed(size),
-                None => cpal::BufferSize::Default,
+                None => cpal::BufferSize::Fixed(256),
             },
         }
     }
