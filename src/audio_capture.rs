@@ -104,12 +104,37 @@ where
     }
 }
 
-/// A struct that captures audio from the default input device and provides it via an Iterator.
+
+
+fn finalize_writer(writer: &Option<WavWriterHandle>) {
+    if let Some(w) = writer {
+        if let Ok(mut guard) = w.lock() {
+            if let Some(wr) = guard.take() {
+                if let Err(e) = wr.finalize() {
+                    eprintln!("Failed to finalize wav file: {e}");
+                }
+            }
+        }
+    }
+}
+
 pub struct AudioCapture {
     receiver: mpsc::Receiver<AudioChunk>,
     stream: Arc<Mutex<Option<cpal::Stream>>>,
     config_params: AudioCaptureConfig,
+    writer: Option<WavWriterHandle>,          // new
 }
+
+impl Drop for AudioCapture {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.stream.lock() {
+            *g = None;                         // stop the callback first
+        }
+        finalize_writer(&self.writer);         // then flush + patch header
+    }
+}
+
+
 
 impl AudioCapture {
     /// Creates a new `AudioCapture` instance with the given configuration, starting the audio stream.
@@ -118,9 +143,10 @@ impl AudioCapture {
 
         let host = cpal::default_host();
         let device = match config_params.device_id {
-            Some(ref device_id) => host
-                .device_by_id(&cpal::DeviceId::new(host.id(), device_id))
-                .ok_or_else(|| anyhow!("Cannot found device {:?}", device_id))?,
+            Some(ref wanted) => host
+                .input_devices()?
+                .find(|d| d.id().map(|id| id.to_string() == *wanted).unwrap_or(false))
+                .ok_or_else(|| anyhow!("Cannot found device {:?}", wanted))?,
             None => host
                 .default_input_device()
                 .ok_or_else(|| anyhow!("No default input device found"))?,
@@ -162,7 +188,7 @@ impl AudioCapture {
                 stream_config,
                 move |data: &[i16], _| {
                     if writer_clone.is_some() {
-                        write_input_data::<i16, f32>(data, writer_clone.as_ref().unwrap());
+                        write_input_data::<i16, i16>(data, writer_clone.as_ref().unwrap());
                     }
                     let f32_data: AudioChunk = data.iter().map(|&s| s.to_sample()).collect();
                     let _ = sender.send(f32_data);
@@ -174,7 +200,7 @@ impl AudioCapture {
                 stream_config,
                 move |data: &[i32], _| {
                     if writer_clone.is_some() {
-                        write_input_data::<i32, f32>(data, writer_clone.as_ref().unwrap());
+                        write_input_data::<i32, i32>(data, writer_clone.as_ref().unwrap());
                     }
                     let f32_data: AudioChunk = data.iter().map(|&s| s.to_sample()).collect();
                     let _ = sender.send(f32_data);
@@ -186,7 +212,7 @@ impl AudioCapture {
                 stream_config,
                 move |data: &[i8], _| {
                     if writer_clone.is_some() {
-                        write_input_data::<i8, f32>(data, writer_clone.as_ref().unwrap());
+                        write_input_data::<i8, i8>(data, writer_clone.as_ref().unwrap());
                     }
                     let f32_data: AudioChunk = data.iter().map(|&s| s.to_sample()).collect();
                     let _ = sender.send(f32_data);
@@ -210,29 +236,16 @@ impl AudioCapture {
 
         if config_params.duration > 0 {
             let stream_clone = Arc::clone(&stream);
+            let writer_for_thread = writer.clone();
+            let duration = config_params.duration;
             thread::spawn(move || {
-                thread::sleep(std::time::Duration::from_secs(config_params.duration));
-
-                if let Ok(mut stream_guard) = stream_clone.lock() {
-                    *stream_guard = None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-
-                if let Some(w) = writer {
-                    if let Ok(mut guard) = w.lock() {
-                        if let Some(writer) = guard.take() {
-                            writer.finalize().expect("Failed to finalize wavefile.");
-                        }
-                    }
-                }
+                thread::sleep(std::time::Duration::from_secs(duration));
+                if let Ok(mut g) = stream_clone.lock() { *g = None; }
+                finalize_writer(&writer_for_thread);
             });
         }
 
-        Ok(AudioCapture {
-            receiver,
-            stream,
-            config_params,
-        })
+        Ok(AudioCapture { receiver, stream, config_params, writer })
     }
 
     /// Manually starts the audio stream.
