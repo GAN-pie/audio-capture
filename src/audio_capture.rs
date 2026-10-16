@@ -104,8 +104,6 @@ where
     }
 }
 
-
-
 fn finalize_writer(writer: &Option<WavWriterHandle>) {
     if let Some(w) = writer {
         if let Ok(mut guard) = w.lock() {
@@ -122,19 +120,17 @@ pub struct AudioCapture {
     receiver: mpsc::Receiver<AudioChunk>,
     stream: Arc<Mutex<Option<cpal::Stream>>>,
     config_params: AudioCaptureConfig,
-    writer: Option<WavWriterHandle>,          // new
+    writer: Option<WavWriterHandle>, // new
 }
 
 impl Drop for AudioCapture {
     fn drop(&mut self) {
         if let Ok(mut g) = self.stream.lock() {
-            *g = None;                         // stop the callback first
+            *g = None; // stop the callback first
         }
-        finalize_writer(&self.writer);         // then flush + patch header
+        finalize_writer(&self.writer); // then flush + patch header
     }
 }
-
-
 
 impl AudioCapture {
     /// Creates a new `AudioCapture` instance with the given configuration, starting the audio stream.
@@ -240,12 +236,19 @@ impl AudioCapture {
             let duration = config_params.duration;
             thread::spawn(move || {
                 thread::sleep(std::time::Duration::from_secs(duration));
-                if let Ok(mut g) = stream_clone.lock() { *g = None; }
+                if let Ok(mut g) = stream_clone.lock() {
+                    *g = None;
+                }
                 finalize_writer(&writer_for_thread);
             });
         }
 
-        Ok(AudioCapture { receiver, stream, config_params, writer })
+        Ok(AudioCapture {
+            receiver,
+            stream,
+            config_params,
+            writer,
+        })
     }
 
     /// Manually starts the audio stream.
